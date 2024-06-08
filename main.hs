@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 import Data.List (intercalate)
-import Language.Haskell.TH.Ppr (ppr_typedef)
+-- import Language.Haskell.TH.Ppr (ppr_typedef)
 import qualified Data.Maybe
 
 
