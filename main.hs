@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 import Data.List (intercalate)
 import Language.Haskell.TH.Ppr (ppr_typedef)
 import qualified Data.Maybe
@@ -15,108 +16,96 @@ ifNonEmpty f ls = f ls
 getStr :: Maybe String -> String
 getStr = Data.Maybe.fromMaybe ""
 
-intercalateMap :: [a1] -> (a2 -> [a1]) -> [a2] -> [a1]
-intercalateMap str fn = intercalate str . map fn
-
 fmtTypes :: [LuaType] -> String
 fmtTypes [] = "unknown"
-fmtTypes types = intercalateMap "|" writeLua types
+fmtTypes [t] = writeLua t
+fmtTypes ts = '(' : intercalate "|" (writeLua <$> ts) ++ ")"
 
 -- any piece of data that should be written to docs
 class LuaData a where
-    name :: a -> String
-    description :: a -> Maybe String
-    description = desc
-    desc :: a -> Maybe String
-    desc = description
     writeLua :: a -> String
     writeLua = writeLua
     writeMarkdown :: a -> String
     getGenerics :: a -> [LuaType]
 
 
-
 -- a function, integer, string, etc
-data LuaType = STRING |
-    INT |
-    NUMBER |
-    BOOL |
-    NIL |
-    GENERIC String |
-    CUSTOM String |
-    LuaFunction Parameters ReturnValues |
+data LuaType = Primitive String |
+    Generic String |
+    Custom String |
+    LuaFunction{pars::Parameters, rets::ReturnValues} |
     LuaArray [LuaType] |
     LuaTable {keyTypes :: [LuaType], valTypes :: [LuaType]}
+    deriving(Show, Eq)
+pSTRING = Primitive "string"
+pINT = Primitive "integer"
+pBOOL = Primitive "boolean"
+pNUM = Primitive "number"
+pNIL = Primitive "nil"
 
 
 
 instance LuaData LuaType where
-    name (LuaFunction args rets) = writeLua $ LuaFunction args rets
-    name STRING = "string"
-    name INT = "integer"
-    name NUMBER = "number"
-    name BOOL = "boolean"
-    name NIL = "nil"
-    name (LuaArray []) = "any[]"
-    name (LuaArray [x]) = name x ++ "[]"
-    name (LuaArray xs) = '(': intercalateMap "|" writeLua xs ++ ")[]"
-    name (LuaTable {keyTypes=keyTypes, valTypes=valTypes}) =
-        "table<" ++ fmtTypes keyTypes ++ ',':fmtTypes valTypes ++ ">"
-    name (CUSTOM str) = str
-    name (GENERIC str) = str
 
-    writeLua (LuaFunction pars []) = "fun(" ++ intercalateMap ", " writeLua pars ++ ")"
-    writeLua (LuaFunction pars rets) = "(fun(" ++ fmttedPars ++ "):" ++ fmttedRets ++ ")"
+    writeLua LuaFunction{pars, rets} = case rets of
+        [] -> "fun(" ++ fmttedPars ++ ")"
+        _  -> "(fun(" ++ fmttedPars ++ "):" ++ fmttedRets ++ ")"
         where
-            fmttedPars = intercalateMap ", " writeLua pars
-            fmttedRets = intercalateMap ", " (intercalateMap "|" writeLua . types) rets
-    writeLua x = name x
+            fmttedPars = intercalate ", " (writeLua <$> pars)
+            fmttedRets = intercalate ", " ((\ret -> fmtTypes  (ptypes ret) ++ pname ret) <$> rets)
+
+    writeLua (LuaArray xs) = case xs of
+        [] -> "any[]"
+        [x] -> writeLua x ++ "[]"
+        _ -> '(': intercalate "|" (writeLua <$> xs) ++ ")[]"
+    writeLua LuaTable{keyTypes, valTypes} = "table<" ++ fmtTypes keyTypes ++ ',':fmtTypes valTypes ++ ">"
+    writeLua (Generic str) = str
+    writeLua (Custom str) = str
+    writeLua (Primitive str) = str
 
     getGenerics :: LuaType -> [LuaType]
-    getGenerics gen@(GENERIC _) = [gen]
-    getGenerics (LuaFunction pars rets) = concatMap (concatMap getGenerics) [pars, rets]
-    getGenerics _ = []
+    getGenerics = \case{
+        (LuaFunction pars rets) -> concatMap (concatMap getGenerics) [pars, rets];
+        (LuaTable keys vals) -> concatMap (concatMap getGenerics) [keys, vals];
+        (LuaArray types) -> concatMap getGenerics types;
+        gen@(Generic _) -> [gen];
+        _ -> []
+    }
 
     writeMarkdown _ = ""
 
 -- a parameter for a function/method/class. this is a name, description, and list of supported types.
 -- types can themselves be functions with nested parameters
 
-data LuaArg = FuncParameter Name Description [LuaType]
-types :: LuaArg -> [LuaType]
-types (FuncParameter _ _ ptypes) = ptypes
+data LuaArg = FuncParameter{pname::Name, pdesc::Description, ptypes:: [LuaType]}
+    deriving (Show, Eq)
 
 instance LuaData LuaArg where
-    name (FuncParameter pname _ _ ) = pname
-    desc (FuncParameter _ pdesc _ ) = pdesc
 
-    writeLua (FuncParameter name desc []) = name ++ maybe "" (' ':) desc
-    writeLua (FuncParameter name desc types) =  name ++ ": " ++  fmtTypes types ++ maybe "" (' ':) desc
+    writeLua FuncParameter{pname, pdesc, ptypes} = pname ++ retTypesStr ++ maybe "" (' ':) pdesc
+        where retTypesStr = ((": "++) . fmtTypes) `ifNonEmpty` ptypes
     -- writeLua (LuaArg name desc types) 
 
-    getGenerics = concatMap getGenerics . types
+    getGenerics = concatMap getGenerics . ptypes
     writeMarkdown :: LuaArg -> String
     writeMarkdown =  const ""
 
-data FuncDef = FuncDef Name Description LuaType
-
+data FuncDef = FuncDef{fname :: Name, fdesc :: Description, fn :: LuaType }
+    deriving (Show, Eq)
 instance LuaData FuncDef where
-    name (FuncDef fname _ _) = fname
-    desc (FuncDef _ fdesc _) = fdesc
-
-    getGenerics (FuncDef _ _ fn) = getGenerics fn
+    getGenerics FuncDef{fn} = getGenerics fn
 
     writeLua (FuncDef fname fdesc fn@(LuaFunction pars rets)) =
         funcDesc -- function description
         ++ genericStr -- generic labels
         ++ concatMap writePar pars -- formatted parameters
         ++ concatMap writeRet rets -- formatted return values
-        ++ "function " ++ fname ++ "(" ++ intercalateMap ", " name pars ++ ") end"
+        ++ "function " ++ fname ++ "(" ++ intercalate ", " (writeLua <$> pars) ++ ") end"
         where
             funcDesc = getStr $ (\str -> "--[[ " ++ str ++ "]]\n") <$> fdesc
             genericStr = case getGenerics fn of
                 [] -> ""
-                generics -> "---@generic " ++ intercalateMap ", " name generics ++ "\n"
+                generics -> "---@generic " ++ intercalate ", " (writeLua <$> generics) ++ "\n"
             writePar :: LuaArg -> String
             writePar (FuncParameter pname pdesc ptypes) = unwords ["---@param", pname, fmtTypes ptypes, getStr pdesc, "\n"]
             writeRet :: LuaArg -> String
@@ -127,92 +116,101 @@ instance LuaData FuncDef where
 
 
 data TableParams = TableParams Name Description [LuaArg]
+    deriving (Show, Eq)
 params (TableParams _ _ pars ) = pars
 instance LuaData TableParams where
-    name (TableParams pname _ _ ) = pname
-    desc (TableParams _ pdesc _ ) = pdesc
     writeLua (TableParams tname tdesc tpars) =
         "--[[" ++ getStr tdesc ++ "]]\n"
         ++ "---@class " ++ tname ++ "\n"
         ++ concatMap writeInline tpars
         where
-            writeInline (FuncParameter name desc types) = 
-               "---@field " ++ name ++ fmtTypes types ++ maybe "" (' ':) desc ++ "\n"
+            writeInline FuncParameter{pname, pdesc, ptypes} = concat ["---@field ", pname, fmtTypes ptypes, maybe "" (' ':) pdesc,  "\n"]
 
 getMethod :: String -> FuncDef -> FuncDef
-getMethod clsName (FuncDef fname fdesc func) = FuncDef (clsName ++ ':':fname) fdesc func
+-- getMethod clsName (FuncDef fname fdesc func) = FuncDef (clsName ++ ':':fname) fdesc func
+getMethod clsName fdef = fdef {fname=clsName ++ ':':fname fdef}
 
-getAPIFunc apiName (FuncDef fname fdesc func) = FuncDef (apiName ++ '.':fname) fdesc func
+getAPIFunc apiName fdef = fdef {fname=apiName ++ '.':fname fdef}
 
 
-writeLuaClassHeader :: Name -> Description -> [String] -> [LuaArg] -> [FuncDef] -> Bool -> String
-writeLuaClassHeader cname cdesc parentNames fields methods isLocal =
-    -- description (if it exists)
+writeLuaClassHeader cls@LuaClass{cname=clsName, cdesc,fields, methods} isLocal = 
     maybe "" (\x ->"--[[" ++ x ++ "]]\n") cdesc
     -- class name and parents
-    ++ "---@class " ++ cname ++ ifNonEmpty ((": "++) . intercalate ", ") parentNames ++ "\n"
+    ++ header
     -- fields
     ++ concatMap (\f -> "---@field" ++ writeLua f ++ "\n") fields
     -- lua code
-    ++ (if isLocal then "local " else "") ++ cname ++ " = {}\n\n"
+    ++ (if isLocal then "local " else "") ++ clsName ++ " = {}\n\n"
     -- methods
-    ++ intercalateMap "\n\n" (writeLua . getMethod cname) methods
+    ++ intercalate "\n\n" (writeLua . getMethod clsName <$> methods)
+    where
+        header = case cname <$> parents cls of 
+            [] -> "---@class " ++ clsName ++ "\n"
+            parentNames -> "---@class " ++ clsName ++ ": " ++ intercalate ", " parentNames ++ "\n"
+
+-- writeLuaClassHeader :: Name -> Description -> [String] -> [LuaArg] -> [FuncDef] -> Bool -> String
+-- writeLuaClassHeader cname cdesc parentNames fields methods isLocal =
+--     -- description (if it exists)
+--     maybe "" (\x ->"--[[" ++ x ++ "]]\n") cdesc
+--     -- class name and parents
+--     ++ "---@class " ++ cname ++ ((": "++) . intercalate ", ") `ifNonEmpty` parentNames ++ "\n"
+--     -- fields
+--     ++ concatMap (\f -> "---@field" ++ writeLua f ++ "\n") fields
+--     -- lua code
+--     ++ (if isLocal then "local " else "") ++ cname ++ " = {}\n\n"
+--     -- methods
+--     ++ intercalate "\n\n" (writeLua . getMethod cname <$> methods)
 
 data LuaClass = LuaClass {cname :: String, cdesc :: Description, parents :: [LuaClass], fields :: [LuaArg], methods :: [FuncDef]}
-
+    deriving (Show, Eq)
 getMethodName :: LuaClass -> String -> String
-getMethodName cls = ((name cls ++ ":") ++)
+getMethodName cls = ((cname cls ++ ":") ++)
 writeMethod :: LuaClass -> FuncDef -> String
-writeMethod cls (FuncDef fname fdesc func) = writeLua (FuncDef (getMethodName cls fname) fdesc func) ++ "\n\n"
+-- writeMethod cls (FuncDef fname fdesc func) = writeLua (FuncDef (getMethodName cls fname) fdesc func) ++ "\n\n"
+writeMethod cls fdef = writeLua fdef{fname=getMethodName cls (fname fdef)} ++ "\n\n"
 
 instance LuaData LuaClass where
-    name = cname
-    desc = cdesc
-
-    writeLua (LuaClass {cname=cname, cdesc=cdesc, parents=parents, fields=fields, methods=methods}) =
-        writeLuaClassHeader cname cdesc (name <$> parents) fields methods True
+    writeLua = flip writeLuaClassHeader True
 
     writeMarkdown _ = ""
-    getGenerics LuaClass{fields=fields,methods=methods} = concatMap getGenerics methods ++ concatMap getGenerics fields
+    getGenerics LuaClass{fields,methods} = concatMap getGenerics methods ++ concatMap getGenerics fields
 
 data LuaAPI = LuaAPI {aname :: String, adesc :: Description, functions :: [FuncDef], constants :: [LuaArg]}
-
+    deriving (Show, Eq)
 
 instance LuaData LuaAPI where
-    name = aname
-    desc = adesc
 
-    writeLua (LuaAPI {aname=cname, adesc=cdesc, functions=methods, constants=fields}) =
+    writeLua LuaAPI {aname, adesc, functions, constants} =
         -- LuaAutoGenHeader 
-        writeLuaClassHeader cname cdesc [] fields [] False
-        ++ intercalateMap "\n\n" (writeLua . getAPIFunc cname) methods
+        writeLuaClassHeader LuaClass{cname=aname, cdesc=adesc, methods=[], fields=constants, parents=[]} False
+        ++ intercalate "\n\n" (writeLua . getAPIFunc aname <$> functions)
 
 
 
 
 main = do {
     let
-        param1 = FuncParameter "a" (Just "help me") [STRING, INT]
-        param2 = FuncParameter "b" (Just "broccoli") [NUMBER, BOOL]
-        ret1 = FuncParameter "a" (Just "help me") [STRING, INT]
-        ret2 = FuncParameter "b" (Just "broccoli") [NUMBER, BOOL]
+        param1 = FuncParameter "a" (Just "help me") [pSTRING, pINT]
+        param2 = FuncParameter "b" (Just "broccoli") [pNUM, pBOOL]
+        ret1 = FuncParameter "a" (Just "help me") [pSTRING, pINT]
+        ret2 = FuncParameter "b" (Just "broccoli") [pNUM, pBOOL]
         f1 = LuaFunction [param1, param2] [ret1, ret2]
         insertdef = FuncDef "insert" (Just "desc") (LuaFunction [param1, param2] [ret1, ret2])
         cls1 = LuaClass {cname="Test_Class", cdesc=Just "Test Class Description", parents=[],
             fields=[
-                FuncParameter "a" (Just "help me") [STRING, INT],
-                FuncParameter  "b" (Just "broccoli") [NUMBER, BOOL]
+                FuncParameter "a" (Just "help me") [pSTRING, pINT],
+                FuncParameter  "b" (Just "broccoli") [pNUM, pBOOL]
             ],
             methods=[
                 FuncDef "method_1" (Just "desc 1") (LuaFunction
-                    [param1, param2, FuncParameter "param3" (Just "Paramter 3 description") [GENERIC "K", CUSTOM "Lua.mcm.DecimalSlider"]]
+                    [param1, param2, FuncParameter "param3" (Just "Paramter 3 description") [Generic "K", Custom "Lua.mcm.DecimalSlider"]]
                     [ret1, ret2])
             ]
         }
         tableapi = LuaAPI {aname="table", adesc=Just "Extends LUA table Api",
             constants=[
-                FuncParameter "size" (Just "size of table") [INT],
-                FuncParameter "name" (Just "name") [STRING]
+                FuncParameter "size" (Just "size of table") [pINT],
+                FuncParameter "name" (Just "name") [pSTRING]
                 ],
             functions=[
                 insertdef
@@ -221,8 +219,8 @@ main = do {
     in
         do
             putStrLn $ writeLua param1;
-            putStrLn $ name param2;
-            putStrLn $ name f1;
+            -- putStrLn $ name param2;
+            -- putStrLn $ name f1;
             putStrLn $ writeLua f1;
             putStrLn $ writeLua insertdef;
             putStrLn $ writeLua cls1;

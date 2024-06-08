@@ -1,9 +1,11 @@
+-- parser code inspired by this stackoverflow post: https://codereview.stackexchange.com/questions/253497/simple-haskell-parser
+-- and this articled linked in said post: https://www.cs.nott.ac.uk/%7Epszgmh/monparsing.pdf
 
 import Control.Monad
 
 import Data.Functor ((<&>))
 import Control.Applicative
-    ( Alternative(many), (<|>), empty, some )
+    ( Alternative(many), (<|>), empty, some, liftA3 )
 import Distribution.Compat.CharParsing (letter, CharParsing (string))
 import Data.Char (isLetter, isDigit)
 import System.Directory.Internal.Prelude (getArgs)
@@ -70,31 +72,28 @@ eatChar = Parser f where
 --     [] -> runParser empty ""; 
 --     (x:xs) -> Right (x, xs)
 -- })
-item = eatChar
-
--- consumes a single character if `pred` succeeds, otherwise fails
-satisfyChar :: (Char -> Bool) -> Parser Char
--- sat pred = do
-    -- char <- parseChar
-    -- if pred char then pure char else zero
--- sat pred = 
---     parseChar >>= \char -> 
---     if pred char then pure char else zero
-satisfyChar pred = satisfy pred eatChar
 
 
 
 satisfy :: (a -> Bool) -> Parser a -> Parser a
 satisfy pred parser = do {a <- parser; guard (pred a); return a}
 
+-- consumes a single character if `pred` succeeds, otherwise fails
+satisfyChar :: (Char -> Bool) -> Parser Char
+satisfyChar pred = satisfy pred eatChar
 
 charParser :: Char -> Parser Char
 charParser charToMatch = satisfyChar (==charToMatch)
+charParser' :: Char -> Parser Char
+charParser' charToMatch = satisfyChar (==charToMatch) <|> fail ("Failed to match " ++ [charToMatch])
 
 -- `mapM` runs `charParser` for each input character and puts the result
 -- together into a list of characters, namely the desired `String`
 stringParser :: String -> Parser String
 stringParser = mapM charParser
+
+stringParser' :: String -> Parser String
+stringParser' str = mapM charParser str <|> fail ("Failed to match " ++ str)
 
 letterParser :: Parser Char
 letterParser = satisfyChar isLetter
@@ -102,41 +101,26 @@ digitParser :: Parser Char
 digitParser = satisfyChar isDigit
 
 
-
-
+addErrMsg :: Parser a -> String -> Parser a
+addErrMsg p str = p <|> fail str
 
 intsParser :: Parser String
 intsParser = some digitParser
 
-
 parensParser :: Parser a -> Parser a
 parensParser p = charParser '(' *> p <* charParser ')'
+parensParser' :: Parser a -> Parser a
+parensParser' p = addErrMsg (charParser '(') "Expected '('" *> p <* addErrMsg (charParser ')') "Expected ')'"
 
 bracketsParser :: Parser a -> Parser a
 bracketsParser p = charParser '[' *> p <* charParser ']'
 bracketsParser' :: Parser a -> Parser a
-bracketsParser' p = stringParser "[" *> p <* stringParser "]"
+bracketsParser' p = stringParser' "[" *> p <* stringParser' "]"
 
 -- TODO: make parser ignore repeated ']'
 descParser :: Parser String
-descParser = (spaceParser *> stringParser "[[" *> many (satisfyChar (/= ']')) <* stringParser "]]")
+descParser = (spaceParser *> stringParser' "[[" *> many (satisfyChar (/= ']')) <* stringParser' "]]")
     <|> stringParser ""
--- multipleIntsParser :: Parser String
--- multipleIntsParser = do
---     many bracketsParser $ intsParser <|> stringParser ","
-
-
-data IntsExpr = ManyInts [String] | OneInt String
-    deriving (Show, Eq)
-
-intsExprParser :: Parser IntsExpr
-intsExprParser = ManyInts <$> bracketsParser (many $ (intsParser <* stringParser ",") <|> intsParser)
-            <|> OneInt <$> intsParser
-
-    -- join  (some intsParser)
-
--- bind :: Parser a -> (a -> Parser b) -> Parser b
--- p ‘bind‘ f = \inp -> concat [f v inp’ | (v,inp’) <- p inp]
 
 matchInput :: String -> String -> String
 matchInput = parseToString . stringParser
@@ -154,6 +138,32 @@ varNameParser = some $ satisfyChar isLetter
 spaceParser :: Parser String
 spaceParser = many $ charParser ' '
 
+surroundBySpaces :: Parser a -> Parser a
+surroundBySpaces p = spaceParser *> p <* spaceParser
+
+class LuaExpr a where
+    parser :: Parser a
+    parseString :: String -> Either ErrorMsg a
+    parseString str = case runParser parser str of
+        Left err -> Left err
+        Right (a, _) -> Right a
+    parseString' :: String -> Either ErrorMsg (a, String)
+    parseString' = runParser parser
+
+data IntsExpr = ManyInts [String] | OneInt String
+    deriving (Show, Eq)
+
+instance LuaExpr IntsExpr where
+    parser = ManyInts <$> bracketsParser (many $ (intsParser <* stringParser' ",") <|> intsParser)
+            <|> OneInt <$> intsParser
+
+
+    -- join  (some intsParser)
+
+-- bind :: Parser a -> (a -> Parser b) -> Parser b
+-- p ‘bind‘ f = \inp -> concat [f v inp’ | (v,inp’) <- p inp]
+
+
 data FuncDefExpr = FuncDefExpr{
     fname :: String,
     fargNames :: [String],
@@ -162,42 +172,24 @@ data FuncDefExpr = FuncDefExpr{
 } deriving (Show, Eq)
 
 
-basicdefparser :: Parser (String, [String], [String])
-basicdefparser = do
-    fname <- varNameParser
-    -- spaceParser
-    charParser '('
-    -- spaceParser
-    fargNames <- nameParser
-    charParser ')'
-    -- stringParser " -> "
-    -- fretNames <- nameParser
-    return (fname, fargNames, ["rets"])
-    where
-        nameParser = some ((stringParser ", " *> varNameParser)  <|> varNameParser)
+instance LuaExpr FuncDefExpr where
+    parser = do
+        fname <- addErrMsg varNameParser  "Failed to parse function name"
+        fargNames <- parensParser' namesParser
+        surroundBySpaces (stringParser' "->")
+        fretNames <- namesParser
+        surroundBySpaces (stringParser' "where")
+        fargTypes <- many (parser :: Parser FuncArgDefn)
+        pure $ FuncDefExpr fname fargNames fretNames fargTypes
 
+        where
+            nameParser = spaceParser *> varNameParser <* ((spaceParser <* charParser ',') <|> stringParser "")
+            namesParser = many nameParser <* spaceParser
+            -- namesParser = many nameParser <* spaceParser
+            -- nameParser = 
+            --     (many $ spaceParser *> ((varNameParser <* spaceCommaParser) <|> varNameParser))
+            --     <* spaceParser
 
-funcDefExprParser :: Parser FuncDefExpr
-funcDefExprParser = do
-    fname <- varNameParser
-    -- spaceParser
-    charParser '('
-    -- spaceParser
-    fargNames <- nameParser
-    charParser ')' 
-    stringParser " -> "
-    fretNames <- nameParser
-    spaceParser
-    stringParser "where"
-    spaceParser
-    fargTypes <- many funcArgDefnParser
-    pure $ FuncDefExpr fname fargNames fretNames fargTypes
-    
-    where
-        -- nameParser = many (many letterParser <|> (some letterParser <* stringParser ", " ))
-        nameParser = spaceParser *> 
-            many ((varNameParser <* spaceParser <* stringParser "," <* spaceParser) <|> varNameParser)
-            <* spaceParser
 
 data FuncArgDefn = FuncArgDefn {
     aName :: String,
@@ -205,60 +197,35 @@ data FuncArgDefn = FuncArgDefn {
     aDesc :: String
 } deriving (Show, Eq)
 
+instance LuaExpr FuncArgDefn where
+    parser = liftA3 FuncArgDefn funcArgNameParser (parser :: Parser TypeExpr) descParser
+        where 
+            funcArgNameParser = varNameParser <* charParser' ':' <* spaceParser
+    -- parser = do
+    --     argName <- varNameParser <* stringParser' ":" <* spaceParser
+    --     argType <- typeExprParser
+    --     FuncArgDefn argName argType <$> descParser
 -- should look like <retname>: <retType> [[<desc>]]
-funcArgDefnParser :: Parser FuncArgDefn
-funcArgDefnParser = do
-    argName <- varNameParser <* stringParser ":" <* spaceParser
-    argType <- typeExprParser
-    FuncArgDefn argName argType <$> descParser
 
 
 
 data TypeExpr = SingleBasicType PrimitiveType | MultiBasicTypes [PrimitiveType]
     deriving (Show, Eq)
 
-
-typeExprParser :: Parser TypeExpr
-typeExprParser =
-    SingleBasicType <$> primitiveTypeParser
-    <|> MultiBasicTypes <$> parensParser (many $
-        primitiveTypeParser <* stringParser "|"
-        <|> primitiveTypeParser
-    )
+instance LuaExpr TypeExpr where
+    parser = SingleBasicType <$> primitiveTypeParser <|> MultiBasicTypes <$> multiTypeParser
+        where
+            primitiveTypeParser = parser :: Parser PrimitiveType
+            multiTypeParser = parensParser' $ many (primitiveTypeParser <* stringParser' "|" <|> primitiveTypeParser)
 
 newtype PrimitiveType = PrimitiveType String deriving (Show, Eq)
 
-primitiveTypeParser :: Parser PrimitiveType
-primitiveTypeParser  = fmap PrimitiveType $
-    spaceParser *> (
-        stringParser "string" <|> stringParser "integer"
-        <|> stringParser "boolean" <|> stringParser "nil"
-        <|> stringParser "number"
-    ) <* spaceParser
+instance LuaExpr PrimitiveType where
+    parser = PrimitiveType <$> surroundBySpaces typesParser
+        where typesParser = stringParser "string" <|> stringParser "integer" <|> stringParser "boolean" 
+                        <|> stringParser "nil" <|> stringParser "number"
 
 
--- data PrimitiveType = STRING | INT | BOOL | NIL | NUMBER deriving (Show, Eq)
--- primitiveTypeParser :: Parser PrimitiveType
--- primitiveTypeParser  = Parser $ \str ->
---     let res = stringParser "string" <|> stringParser "integer" <|> stringParser "boolean" <|> stringParser "nil"
---             <|> stringParser "number"
---         in case runParser res str of
---         Left errMsg -> Left errMsg
---         Right (x, rest) -> 
---             Right (
---                 case x of
---                     "string" -> STRING
---                 , 
---                 rest
---             )
---     where
---         evalParser pat s = run
--- primitiveTypeParser t = Parser $ case t of
---     STRING -> \str -> runParser (stringParser "string") str
--- typeExprParser :: Parser TypeExpr
--- typeExprParser = SingleBasicType <$> bracketsParser (many $ (intsParser <* stringParser ",") <|> intsParser)
---             <|> OneInt <$> intsParser
---     where 
 
 
 main = do
@@ -268,7 +235,7 @@ main = do
     -- args <- getArgs
     -- putStrLn . parseToString typeExprParser $ head args
     -- getArgs >>= putStrLn . parseToString funcRetExprParser . head
-    getArgs >>= putStrLn . parseToString funcDefExprParser . head
+    getArgs >>= putStrLn . parseToString (parser:: Parser FuncDefExpr) . head
     -- getArgs >>= putStrLn . parseToString typeExprParser . head
 
     -- matchInput <$> (putStr "Pattern: " >> getLine) <*> (putStr "Input: " >> getLine)
