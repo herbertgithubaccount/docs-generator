@@ -166,59 +166,34 @@ optional' = optional (pure (empty :: Parser a))
 class LuaExpr a where
     parser :: Parser a
 
-commaParser = surroundBySpaces (stringParser' ",") <|> stringParser ""
+commaParser = optional' $ surroundBySpaces (stringParser' ",")
 
 data VarDefnExpr = VarDefnExpr{vName:: String, vType:: Maybe TypeExpr} deriving (Show, Eq)
 
 instance LuaExpr VarDefnExpr where
     parser = VarDefnExpr <$> varNameParser <*> typesParser
-        where typesParser = (surroundBySpaces (charParser' ':') *> pureRight parser) <|> pure empty
+        where typesParser = optional' (surroundBySpaces (charParser' ':') *> pureRight parser)
 
 data FuncDefExpr = FuncDefExpr{
-    fname :: String,
-    fargNames :: [VarDefnExpr],
-    fretNames :: [VarDefnExpr],
-    fargDefns :: [VarDefnExpr] -- used to be other type
+    fgenericNames :: [String],
+    fargNames     :: [VarDefnExpr],
+    fretNames     :: [VarDefnExpr],
+    fargDefns     :: [VarDefnExpr] -- used to be other type
 } deriving (Show, Eq)
 
 
 
 instance LuaExpr FuncDefExpr where
-    parser = do
-        fname <- optional' varNameParser -- name is optional
-        fargNames <- namesParser
-        surroundedStrParser' "->"
-        fretNames <- namesParser
-        fargTypes <- optional' (surroundedStrParser' "where" *> many parser)
-
-        pure (FuncDefExpr fname fargNames fretNames fargTypes)
-
+    parser = liftM4 FuncDefExpr genericsParser argsParser retsParser defnsParser
         where
-
-            -- surroundedStrParser' = surroundBySpaces . stringParser'
-            -- commaParser = surroundBySpaces (stringParser' ",") <|> stringParser ""
-            -- nameParser = (parser :: Parser VarDefnExpr) <* commaParser
-            -- namesParser = (surroundBySpaces . parensParser' . some) nameParser
-            --             <|> (surroundBySpaces . pureRight) nameParser
             surroundedStrParser' = surroundBySpaces . stringParser'
-            -- namesParser = (surroundBySpaces . parensParser' . some) nameParser
-            --             <|> (surroundBySpaces . pureRight) nameParser
-            namesParser = (surroundBySpaces . parensParser' . many . surroundBySpaces) (parser  <* commaParser <|> parser)
+            argsParser = (surroundBySpaces . parensParser' . many . surroundBySpaces) (parser  <* commaParser <|> parser)
                         <|> (surroundBySpaces . pureRight) parser
-            -- namesParser = surroundBySpaces (parensParser' (stringParser "")) >>= \x -> pure []
+            retsParser = surroundedStrParser' "->" *> argsParser
+            defnsParser = optional' $ surroundedStrParser' "where" *> many parser
+            genericsParser = optional' (charParser '<' *> genericsNameParser <* charParser '>')
+                where genericsNameParser = some (surroundBySpaces varNameParser <* commaParser)
 
-
-
-data FuncArgDefn = FuncArgDefn {
-    aName :: String,
-    aType :: TypeExpr,
-    aDesc :: String
-} deriving (Show, Eq)
-
-instance LuaExpr FuncArgDefn where
-    parser = liftA3 FuncArgDefn funcArgNameParser (parser :: Parser TypeExpr) descParser
-        where
-            funcArgNameParser = varNameParser <* charParser' ':' <* spaceParser
 
 
 
@@ -229,7 +204,7 @@ instance LuaExpr TypeExpr where
 
     parser = Primitive <$> primitiveParser
         <|> NonPrimitive <$> nonPrimitiveParser
-        <|> Function <$> (parser:: Parser FuncDefExpr)
+        <|> Function <$> parser
         <|> Multi <$> multiParser
         where
             primitiveParser = stringParser "string" <|> intParser <|> boolParser <|> stringParser "nil" <|> numParser
@@ -240,7 +215,6 @@ instance LuaExpr TypeExpr where
 
             commaParser = surroundBySpaces (stringParser' ",") <|> stringParser ""
             multiParser = parensParser' $ some ((parser :: Parser TypeExpr) <* commaParser)
-                where commaParser = surroundBySpaces (stringParser' ",") <|> stringParser ""
 
 
 newtype PrimitiveType = PrimitiveType String deriving (Show, Eq)
@@ -275,7 +249,7 @@ main = do
     -- args <- getArgs
     -- putStrLn . parseToString typeExprParser $ head args
     -- getArgs >>= putStrLn . parseToString funcRetExprParser . head
-    getArgs >>= putStrLn . parseToString (parser:: Parser FuncDefExpr) . head
+    getArgs >>= putStrLn . parseToString (parser:: Parser VarDefnExpr) . head
     -- getArgs >>= putStrLn . parseToString typeExprParser . head
 
     -- matchInput <$> (putStr "Pattern: " >> getLine) <*> (putStr "Input: " >> getLine)
