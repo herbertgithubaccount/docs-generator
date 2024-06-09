@@ -9,7 +9,8 @@ module LuaData
 import Data.List (intercalate)
 -- import Language.Haskell.TH.Ppr (ppr_typedef)
 import Control.Applicative (liftA3)
-
+-- import qualified Data.Set as Set
+import qualified Data.Set as Set
 
 filterMap :: (a -> Maybe b) -> [a] -> [b]
 filterMap f = foldr g []
@@ -29,10 +30,10 @@ class LuaData a where
     writeMarkdownInline :: a -> String
     writeMarkdownInline = writeMarkdown
     getGenerics :: a -> [LuaType]
-    getGenerics = const []
+    getGenerics = pure []
 
 
-data PrimitiveType = STRING | INT | BOOL | NUM | NIL deriving (Show, Eq)
+data PrimitiveType = STRING | INT | BOOL | NUM | NIL deriving (Show, Eq, Ord)
 
 instance LuaData PrimitiveType where
     writeLua STRING = "string"
@@ -51,7 +52,7 @@ data LuaType = Primitive PrimitiveType
     | Table {keys :: LuaType, vals :: LuaType}
     | Dict [LuaVar]
     | Class LuaClassDefn
-    deriving(Show, Eq)
+    deriving(Show, Eq, Ord)
 
 
 fmtVars :: LuaData a => [a] -> [Char]
@@ -105,10 +106,11 @@ data LuaVar = LuaVar {name:: String, desc:: String, vtype:: Maybe LuaType}
     | LuaFuncArg {name:: String, desc:: String, vtype:: Maybe LuaType}
     | LuaFuncRet {name:: String, desc:: String, vtype:: Maybe LuaType}
     | LuaField {name:: String, desc:: String, vtype:: Maybe LuaType}
-    deriving (Show, Eq)
+    deriving (Show, Eq, Ord)
 
 -- writeType 
 instance LuaData LuaVar where
+    getGenerics  = maybe [] (Set.toList . Set.fromList . getGenerics ) . vtype
     writeLua (LuaFuncArg name desc vtype) = unwords ["---@param", name, maybe "" writeLua vtype, desc, "\n"]
     writeLua (LuaField name desc vtype) = unwords ["---@field", name, maybe "" writeLua vtype, desc, "\n"]
     writeLua (LuaFuncRet name desc vtype) = unwords ["---@return", maybe "" writeLua vtype, name, desc, "\n"]
@@ -140,7 +142,7 @@ instance LuaData LuaVar where
                 writer x = case vtype x of
                     Just (Class cls) -> writeLua cls ++ "\n"
                     _ -> ""
-                paramsStr = concatMap writer pars' ++ concatMap writer rets' 
+                paramsStr = concatMap writer pars' ++ concatMap writer rets'
                     -- where
                     --     tableParams = filterMap f pars ++ filterMap f rets
                     --     f v = case vtype v of
@@ -184,20 +186,20 @@ data LuaClassDefn = LuaClassDefn{
     parents:: [LuaClassDefn],
     fields:: [LuaVar],
     methods:: [LuaVar]
-} deriving (Show, Eq)
+} deriving (Show, Eq, Ord)
 instance LuaData LuaClassDefn where
     writeLuaInline = cname
-    writeLua cls@LuaClassDefn{parents} = 
+    writeLua cls@LuaClassDefn{parents} =
         (if null (cdesc cls) then "" else  "--[[ " ++ cdesc cls ++ "]]\n")
         ++ "---@class " ++ cname cls ++ parentsList ++ "\n"
         ++ concatMap writeLua (fields cls)
-        ++ case methods cls of 
+        ++ case methods cls of
             [] -> ""
-            ms -> if '.' `elem` cname cls then "" else "local " ++ cname cls ++ " = {}\n\n" 
+            ms -> if '.' `elem` cname cls then "" else "local " ++ cname cls ++ " = {}\n\n"
                 ++ intercalate "\n\n" [writeLua m{name=cname cls ++ "." ++ name m} | m <- ms]
         where
             parentsList = if null parents then "" else ": " ++ intercalate ", " (map cname parents)
-            
+
     -- writeLuaInline (LuaVar name _ vtype) = case vtype of 
 
     -- writeLua _ = ""

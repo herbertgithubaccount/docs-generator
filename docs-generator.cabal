@@ -65,10 +65,10 @@ executable docs-generator
     other-modules: Parser, LuaData
     default-extensions: NamedFieldPuns, InstanceSigs, TupleSections, DeriveFunctor
     -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions: List
+    -- other-extensions: containers
 
     -- Other library packages from which modules are imported.
-    build-depends:    base ^>=4.17.2.1,
+    build-depends:    base ^>=4.17.2.1, containers
 
     -- Directories containing source files.
     hs-source-dirs:   app

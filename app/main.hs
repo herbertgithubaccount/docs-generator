@@ -15,7 +15,12 @@ import qualified Data.Maybe as Maybe
 
 decodeHelper :: [String] -> Parser.TypeDefn -> LuaData.LuaType
 decodeHelper gens td = case td of
-    p@(Parser.Primitive _) -> decodeTypeDefn p
+    (Parser.Primitive p) -> case p of
+        Parser.STRING -> LuaData.Primitive LuaData.STRING
+        Parser.NUM -> LuaData.Primitive LuaData.NUM
+        Parser.NIL -> LuaData.Primitive LuaData.NIL
+        Parser.BOOL -> LuaData.Primitive LuaData.BOOL
+        Parser.INT ->LuaData.Primitive  LuaData.INT
     Parser.NonPrimitive n -> if n `elem` gens
                              then LuaData.Generic n
                              else LuaData.Custom n
@@ -57,25 +62,19 @@ decodeHelper gens td = case td of
         decodeVar gens' (VarDefn x1 x2 x3) = LuaData.LuaVar x1 x3 (decodeHelper gens' <$> x2)
 
 decodeTypeDefn :: Parser.TypeDefn -> LuaData.LuaType
-decodeTypeDefn (Parser.Primitive p) = case p of
-    Parser.STRING -> LuaData.Primitive LuaData.STRING
-    Parser.NUM -> LuaData.Primitive LuaData.NUM
-    Parser.NIL -> LuaData.Primitive LuaData.NIL
-    Parser.BOOL -> LuaData.Primitive LuaData.BOOL
-    Parser.INT ->LuaData.Primitive  LuaData.INT
-decodeTypeDefn x = decodeHelper [] x
-decodeTypeDefn (NonPrimitive s) = LuaData.Custom s
+decodeTypeDefn = decodeHelper []
+-- decodeTypeDefn (NonPrimitive s) = LuaData.Custom s
 
-decodeTypeDefn (Parser.Array types) = LuaData.Array (decodeTypeDefn <$> types)
-decodeTypeDefn (Parser.Dict vars) = LuaData.Dict (map decodeVar vars)
-decodeTypeDefn (Parser.Multi vars) = LuaData.Multi $ decodeTypeDefn <$> vars
-decodeTypeDefn (Parser.Table keys vals) = LuaData.Table (decodeTypeDefn keys) (decodeTypeDefn vals)
-decodeTypeDefn (Parser.Function generics args rets defns) =
-    LuaData.Function{
-        -- generics=LuaData.Generic <$> generics,
-        LuaData.pars=map (liftA3 LuaData.LuaFuncArg Parser.vName Parser.vDesc (fmap decodeTypeDefn . Parser.vType)) args,
-        LuaData.rets=map (liftA3 LuaData.LuaFuncRet Parser.vName Parser.vDesc (fmap decodeTypeDefn . Parser.vType)) rets
-    }
+-- decodeTypeDefn (Parser.Array types) = LuaData.Array (decodeTypeDefn <$> types)
+-- decodeTypeDefn (Parser.Dict vars) = LuaData.Dict (map decodeVar vars)
+-- decodeTypeDefn (Parser.Multi vars) = LuaData.Multi $ decodeTypeDefn <$> vars
+-- decodeTypeDefn (Parser.Table keys vals) = LuaData.Table (decodeTypeDefn keys) (decodeTypeDefn vals)
+-- decodeTypeDefn (Parser.Function generics args rets defns) =
+--     LuaData.Function{
+--         -- generics=LuaData.Generic <$> generics,
+--         LuaData.pars=map (liftA3 LuaData.LuaFuncArg Parser.vName Parser.vDesc (fmap decodeTypeDefn . Parser.vType)) args,
+--         LuaData.rets=map (liftA3 LuaData.LuaFuncRet Parser.vName Parser.vDesc (fmap decodeTypeDefn . Parser.vType)) rets
+--     }
 
 
 
@@ -95,9 +94,11 @@ main = do
     contents <- hGetContents handle
     let firstArg = filter (/='\n') contents
         str = case runParser (Parser.parser :: Parser VarDefn) firstArg of
-            (Right result, rest) -> "---------------------------\n\tOUTPUT\n---------------------------\n\n" ++ writeLua (decodeVar result)
-                ++ "\n\n---------------------------\n\tDECODED\n---------------------------\n" ++ show (decodeVar result)
+            (Right result, rest) -> "---------------------------\n\tOUTPUT\n---------------------------\n\n" ++ writeLua decoded
+                ++ "\n\n---------------------------\n\tDECODED\n---------------------------\n" ++ show decoded
+                ++ "\n\n---------------------------\n\tGENERICS\n---------------------------\n" ++ show (LuaData.getGenerics decoded)
                 ++ "\n\n---------------------------\n\tUNPARSED\n---------------------------\n\t" ++ rest
+                where decoded = decodeVar result
             (Left err, rest) -> "ERROR: " ++ err ++ "\n\tunparsed: " ++ rest
 
     putStrLn str
