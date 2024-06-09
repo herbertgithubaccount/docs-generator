@@ -1,4 +1,12 @@
 {-# LANGUAGE LambdaCase #-}
+
+module LuaData 
+( LuaData(writeLua, writeMarkdown, getGenerics)
+, LuaType
+, LuaArg
+, FuncDef
+, TableParams
+) where
 import Data.List (intercalate)
 -- import Language.Haskell.TH.Ppr (ppr_typedef)
 import qualified Data.Maybe
