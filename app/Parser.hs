@@ -1,22 +1,24 @@
 -- parser code inspired by this stackoverflow post: https://codereview.stackexchange.com/questions/253497/simple-haskell-parser
 -- and this articled linked in said post: https://www.cs.nott.ac.uk/%7Epszgmh/monparsing.pdf
 {-# LANGUAGE LambdaCase #-}
-
+{-# LANGUAGE TupleSections #-}
 module Parser 
-( Parser
+( Parser(runParser)
+, ParserResult
+, TypeDefn(Primitive, NonPrimitive, Function, Multi, Dict, Table, Array, generics, args, rets, keys, vals)
 , LuaExpr(parser)
-, VarDefn
-, TypeDefn
+, VarDefn(vName, vDesc, vType, VarDefn)
+, PrimitiveType(STRING, INT, NUM, BOOL, NIL)
 ) where
 
 import Control.Monad
 
 import Data.Functor ((<&>))
 import Control.Applicative
-    ( Alternative(many), (<|>), empty, some, liftA2, liftA3 )
+    ( Alternative(many), (<|>), empty, some )
 -- import Distribution.Compat.CharParsing (letter, CharParsing (string))
-import Data.Char (isLetter, isDigit, isUpper, isAlphaNum, isAlpha)
-import System.Directory.Internal.Prelude (getArgs)
+import Data.Char (isLetter, isDigit, isUpper, isAlphaNum, isSpace)
+-- import System.Directory.Internal.Prelude (getArgs)
 
 type ErrorMsg = String
 
@@ -62,7 +64,7 @@ instance MonadFail Parser where
 instance Alternative Parser where
   empty = fail "<empty>"
   -- try parser `p`, then try parser `q` if `p` fails
-  p <|> q = Parser $ \str -> let x@(res, str') = runParser p str in case res of
+  p <|> q = Parser $ \str -> let x@(res, _) = runParser p str in case res of
         Left _ -> runParser q str;
         _ -> x
 
@@ -75,6 +77,7 @@ eatCharFailMsg errMsg = Parser $ \case{
     "" -> (Left errMsg, "");
     ch:rest -> (Right ch, rest);
 }
+eatChar :: Parser Char
 eatChar = eatCharFailMsg "Unexpected EOF"
 
 satisfy :: Show a => (a -> Bool) -> Parser a -> Parser a
@@ -99,26 +102,8 @@ stringParser = mapM charParser
 stringParser' :: String -> Parser String
 -- stringParser' str = (mapM charParser str) <|> fail ("Failed to match " ++ str)
 stringParser' str = (mapM charParser' str)
-
-letterParser :: Parser Char
-letterParser = satisfyChar isLetter
-digitParser :: Parser Char
-digitParser = satisfyChar isDigit
-
-
-addErrMsg :: Parser a -> String -> Parser a
-addErrMsg p str = p <|> fail str
-
-intsParser :: Parser String
-intsParser = some digitParser
-
-parensParser :: Parser a -> Parser a
-parensParser p = charParser '(' *> p <* charParser ')'
 parensParser' :: Parser a -> Parser a
 parensParser' p = charParser' '(' *> p <* charParser' ')'
-
-bracketsParser :: Parser a -> Parser a
-bracketsParser p = charParser '[' *> p <* charParser ']'
 bracketsParser' :: Parser a -> Parser a
 bracketsParser' p = charParser' '[' *> p <* charParser' ']'
 cbracketsParser' :: Parser a -> Parser a
@@ -127,18 +112,16 @@ cbracketsParser' p = charParser' '{' *> p <* charParser' '}'
 -- TODO: make parser ignore repeated ']'
 
 
-matchInput :: String -> String -> String
-matchInput = parseToString . stringParser
 
 
-parseToString :: Show a => Parser a -> String -> String
-parseToString p str = let (result, leftover) = runParser p str in
-    (case result of
-        Left err -> show "ERROR: " ++ err
-        Right res -> "SUCCESS: " ++ show res
-    ) ++ case leftover of
-        [] -> ""
-        _ -> ".\n\tunparsed: " ++ leftover
+-- parseToString :: Show a => Parser a -> String -> String
+-- parseToString p str = let (result, leftover) = runParser p str in
+--     (case result of
+--         Left err -> show "ERROR: " ++ err
+--         Right res -> "SUCCESS: " ++ show res
+--     ) ++ case leftover of
+--         [] -> ""
+--         _ -> ".\n\tunparsed: " ++ leftover
 
 
 
@@ -149,7 +132,7 @@ varNameParser = (:) <$> satisfyChar isLetter <*> many (satisfyChar (\ch -> isLet
 
 
 spaceParser :: Parser String
-spaceParser = many $ charParser ' '
+spaceParser = many $ satisfyChar isSpace
 
 surroundBySpaces :: Parser a -> Parser a
 surroundBySpaces p = spaceParser *> p <* spaceParser
@@ -167,6 +150,7 @@ optional' = optional (pure (empty :: Parser a))
 class LuaExpr a where
     parser :: Parser a
 
+commaParser :: Parser String
 commaParser = optional' $ surroundBySpaces (stringParser' ",")
 
 data VarDefn = VarDefn{vName:: String, vType:: Maybe TypeDefn, vDesc:: String} deriving (Show, Eq)
@@ -184,6 +168,7 @@ data VarDefn = VarDefn{vName:: String, vType:: Maybe TypeDefn, vDesc:: String} d
 --             };
 --             ch -> (ch:) <$> (eater >>= selector);
 --         }
+commentParser :: Parser String
 commentParser = stringParser "[[" *> commentParserHelper
     where
         commentParserHelper = many (satisfyChar (/= ']')) >>= (\str -> (str ++) <$> bracketEater)
@@ -231,10 +216,15 @@ instance LuaExpr VarDefn where
 -- 2) they start with any letter, and include a single "." at some point in the type name.
 customTypeParser :: Parser String
 customTypeParser = 
-        (:) <$> satisfyChar isUpper <*> many (satisfyChar (\ch -> isAlphaNum ch || ch == '_'))
-    <|> do tblName <- varNameParser <* charParser' '.'
-           name <- varNameParser
-           pure (tblName ++ ('.':name))
+        (:) <$> satisfyChar isLetter <*> many (satisfyChar (\ch -> isAlphaNum ch || elem ch "_."))
+    -- <|> do tblName <- varNameParser <* charParser' '.'
+    --        name <- varNameParser
+    --        pure (tblName ++ ('.':name))
+-- customTypeParser = 
+--         (:) <$> satisfyChar isUpper <*> many (satisfyChar (\ch -> isAlphaNum ch || ch == '_'))
+--     <|> do tblName <- varNameParser <* charParser' '.'
+--            name <- varNameParser
+--            pure (tblName ++ ('.':name))
     -- do tblName <- varNameParser <* charParser' '.'
     --        name <- varNameParser
     --        pure (tblName ++ ('.':name))
@@ -295,18 +285,18 @@ instance LuaExpr TypeDefn where
             dictParser = cbracketsParser' (Dict <$> surroundBySpaces (some (parser <* commaParser)))
 
 
-main = do
-    -- (putStr "Digits: " >> getLine) >>= putStrLn . parseToString intsParser
-    -- (putStr "Digits: " >> getLine) >>= putStrLn . parseToString intsExprParser
-    -- (putStr "Type: " >> getLine) >>= putStrLn . parseToString TypeDefnParser
-    -- args <- getArgs
-    -- putStrLn . parseToString TypeDefnParser $ head args
-    -- getArgs >>= putStrLn . parseToString funcRetExprParser . head
-    -- getArgs >>= putStrLn . parseToString (commentParser) . head
-    -- getArgs >>= putStrLn . parseToString (commentParser) . head
-    getArgs >>= putStrLn . parseToString (parser:: Parser VarDefn) . head
-    getArgs >>= putStrLn . parseToString (parser:: Parser TypeDefn) . head
-    -- getArgs >>= putStrLn . parseToString TypeDefnParser . head
+-- main = do
+--     -- (putStr "Digits: " >> getLine) >>= putStrLn . parseToString intsParser
+--     -- (putStr "Digits: " >> getLine) >>= putStrLn . parseToString intsExprParser
+--     -- (putStr "Type: " >> getLine) >>= putStrLn . parseToString TypeDefnParser
+--     -- args <- getArgs
+--     -- putStrLn . parseToString TypeDefnParser $ head args
+--     -- getArgs >>= putStrLn . parseToString funcRetExprParser . head
+--     -- getArgs >>= putStrLn . p  arseToString (commentParser) . head
+--     -- getArgs >>= putStrLn . parseToString (commentParser) . head
+--     getArgs >>= putStrLn . parseToString (parser:: Parser VarDefn) . head
+--     getArgs >>= putStrLn . parseToString (parser:: Parser TypeDefn) . head
+--     -- getArgs >>= putStrLn . parseToString TypeDefnParser . head
 
-    -- matchInput <$> (putStr "Pattern: " >> getLine) <*> (putStr "Input: " >> getLine)
-    --    >>= putStrLn
+--     -- matchInput <$> (putStr "Pattern: " >> getLine) <*> (putStr "Input: " >> getLine)
+--     --    >>= putStrLn

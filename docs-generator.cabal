@@ -23,7 +23,7 @@ name:               docs-generator
 version:            0.1.0.0
 
 -- A short (one-line) description of the package.
-synopsis:           automatically generate documentation for tes3
+-- synopsis:
 
 -- A longer description of the package.
 -- description:
@@ -59,24 +59,19 @@ executable docs-generator
     import:           warnings
 
     -- .hs or .lhs file containing the Main module.
-    main-is:          main.hs
+    main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    other-modules: LuaData.hs, Parser.hs
-
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
+    other-modules: Parser, LuaData
     default-extensions: NamedFieldPuns, InstanceSigs, TupleSections, DeriveFunctor
+    -- LANGUAGE extensions used by modules in this package.
+    -- other-extensions: List
 
     -- Other library packages from which modules are imported.
-    build-depends:    
-        base ^>=4.17.2.1,
-        pretty-simple,
-        directory,
-        process
+    build-depends:    base ^>=4.17.2.1,
 
     -- Directories containing source files.
-    hs-source-dirs:   ./app
+    hs-source-dirs:   app
 
     -- Base language which the package is written in.
     default-language: Haskell2010
