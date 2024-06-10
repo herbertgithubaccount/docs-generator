@@ -2,10 +2,11 @@
 -- and this articled linked in said post: https://www.cs.nott.ac.uk/%7Epszgmh/monparsing.pdf
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE TupleSections #-}
+{-# OPTIONS_GHC -Wno-unused-do-bind #-}
 module Parser 
 ( Parser(runParser)
 , ParserResult
-, TypeDefn(Primitive, NonPrimitive, Function, Multi, Dict, Class, Table, Array, generics, args, rets, keys, vals)
+, TypeDefn(Primitive, NonPrimitive, Function, Multi, Dict, Class, Table, Array, generics, args, rets, keys, vals, constants, fields, parents)
 , LuaExpr(parser)
 , VarDefn(vName, vDesc, vType, VarDefn)
 , PrimitiveType(STRING, INT, NUM, BOOL, NIL)
@@ -195,7 +196,7 @@ data TypeDefn = Primitive PrimitiveType
     | Array [TypeDefn]
     | Table {keys :: TypeDefn, vals :: TypeDefn}
     | Dict [VarDefn]
-    | Class [VarDefn]
+    | Class{fields :: [VarDefn], constants :: [VarDefn], parents :: [TypeDefn]}
     deriving (Show, Eq)
 
 instance LuaExpr TypeDefn where
@@ -226,7 +227,19 @@ instance LuaExpr TypeDefn where
             tableParser = cbracketsParser' (Table <$> parser <*> (commaParser *> parser))
             multiTypesParser = surroundBySpaces . some $ optionalIgnore (parser :: Parser TypeDefn)  (surroundBySpaces (stringParser' "|"))
             dictParser = cbracketsParser' (Dict <$> surroundBySpaces (some (parser <* commaParser)))
-            classParser = cbracketsParser' $ cbracketsParser' (Class <$> surroundBySpaces (some (parser <* commaParser)))
+            classParser = do 
+                charParser' '{' <* spaceParser <* charParser' '{'
+                fields <- surroundBySpaces (many (parser <* commaParser)) 
+                charParser' '}'
+                -- charParser' '}' <* surroundBySpaces (charParser ',') <* charParser '{'
+                constants <- optional' (surroundBySpaces (charParser ',') *> charParser '{'
+                        *> surroundBySpaces (many (parser <* commaParser))
+                        <* charParser' '}'
+                    )
+                -- constants <- surroundBySpaces (many (parser <* commaParser))
+                -- charParser' '}' <* spaceParser <* charParser' '}'
+                spaceParser <* charParser' '}'
+                return $ Class fields constants []
 
 
 -- main = do

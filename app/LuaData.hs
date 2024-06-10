@@ -4,7 +4,7 @@ module LuaData
 , PrimitiveType(STRING, INT, BOOL, NUM, NIL)
 , LuaType(Generic, Custom, Function, Array, Table, Primitive, Dict, Multi, Class, pars, rets, keys, vals)
 , LuaVar(name, desc, vtype, LuaVar, LuaField, LuaFuncArg, LuaFuncRet)
-, LuaClassDefn(LuaClassDefn, cname, cdesc, methods, fields, parents, isGlobal)
+, LuaClassDefn(LuaClassDefn, cname, cdesc, constants, fields, parents, isGlobal)
 , updateMethodSignatures
 -- , FuncDef
 ) where
@@ -123,7 +123,7 @@ instance LuaData LuaVar where
             ++ concatMap (writeLua . liftA3 LuaField name desc vtype) vars
         (Just fn@(Function{pars, rets})) ->
             paramsStr ++ descStr
-            ++ case getGenerics fn of
+            ++ case getGenerics var of
                 [] -> ""
                 generics -> "---@generic " ++ intercalate ", " (writeLua <$> generics) ++ "\n"
             ++ concatMap writeLua pars' -- formatted parameters
@@ -158,8 +158,10 @@ instance LuaData LuaVar where
             descStr = if null (desc var) then "" else  "--[[ " ++ desc var ++ "]]\n"
 
 
-    writeLuaInline var@LuaFuncRet{} = vname ++ maybe "unknown" writeLuaInline (vtype var)
-        where vname = if null (name var) then "" else name var ++ ": "
+    writeLuaInline var@LuaFuncRet{} = tp ++ vname
+        where 
+            tp = maybe "unknown" writeLuaInline (vtype var)
+            vname = if null (name var) then "" else ": " ++ name var
 
     writeLuaInline var = name var ++ maybe "" ((": "++) . writeLuaInline) (vtype var)
 
@@ -170,14 +172,15 @@ data LuaClassDefn = LuaClassDefn{
     cdesc:: String,
     parents:: [LuaClassDefn],
     fields:: [LuaVar],
-    methods:: [LuaVar],
+    constants:: [LuaVar],
+    -- methods:: [LuaVar],
     isGlobal:: Bool
 } deriving (Show, Eq, Ord)
 
 
 updateMethodSignatures :: LuaClassDefn -> LuaClassDefn
-updateMethodSignatures clsdefn@LuaClassDefn{cname=clsName, methods=clsMethods} =
-    clsdefn{methods=newMethods}
+updateMethodSignatures clsdefn@LuaClassDefn{cname=clsName, constants=clsMethods} =
+    clsdefn{constants=newMethods}
     where
         newMethods = foldr f [] clsMethods
         f m = (updateMethod m:)
@@ -198,7 +201,7 @@ instance LuaData LuaClassDefn where
     writeLua cls@LuaClassDefn{parents} =
         (if null (cdesc cls) then "" else  "--[[ " ++ cdesc cls ++ "]]\n")
         ++ "---@class " ++ cname cls ++ parentsList ++ "\n"
-        ++ concatMap writeLua fields'
+        ++ concatMap writeLua (fields cls)
         ++ if null methodStrs then "" else
             luaTblDefn
             ++ intercalate "\n\n" methodStrs
@@ -206,20 +209,21 @@ instance LuaData LuaClassDefn where
             luaTblDefn = (if isGlobal cls && '.' `elem` cname cls then "" else "local ") ++ cname cls ++ " = {}\n\n"
             parentsList = if null parents then "" else ": " ++ intercalate ", " (map cname parents)
             clsName = cname cls
-            (specialFuncs, fields') = partition (\f -> case vtype f of
-                Nothing -> False
-                Just Function{pars, rets} -> any pr pars || any pr rets
-                    where
-                        pr :: LuaVar -> Bool
-                        pr v = case vtype v of
-                            Nothing -> False
-                            Just (Class _) -> True
-                            _ -> False
-                _ -> False
-                ) (fields cls)
-            specialFuncs' = liftA3 LuaVar name desc vtype <$> specialFuncs
-            methodStrs = (specialFuncs' ++ methods cls) <&> (\m -> writeLua m{name=clsName ++ "." ++ name m})
-            
+            -- (specialFuncs, fields') = partition (\f -> case vtype f of
+            --     Nothing -> False
+            --     Just Function{pars, rets} -> any pr pars || any pr rets
+            --         where
+            --             pr :: LuaVar -> Bool
+            --             pr v = case vtype v of
+            --                 Nothing -> False
+            --                 Just (Class _) -> True
+            --                 _ -> False
+            --     _ -> False
+            --     ) (fields cls)
+            -- specialFuncs' = liftA3 LuaVar name desc vtype <$> specialFuncs
+            -- methodStrs = (specialFuncs' ++ methods cls) <&> (\m -> writeLua m{name=clsName ++ "." ++ name m})
+            methodStrs = constants cls <&> (\m -> writeLua m{name=clsName ++ "." ++ name m})
+
 
     -- writeLuaInline (LuaVar name _ vtype) = case vtype of 
 
@@ -278,14 +282,14 @@ instance LuaData LuaClassDefn where
 --     writeMarkdown _ = ""
 --     getGenerics LuaClass{fields,methods} = concatMap getGenerics methods ++ concatMap getGenerics fields
 
-data LuaAPI = LuaAPI {aname :: String, adesc :: String, functions :: [LuaVar], constants :: [LuaVar]}
+data LuaAPI = LuaAPI {aname :: String, adesc :: String, functions :: [LuaVar], apiconstants :: [LuaVar]}
     deriving (Show, Eq)
 
 instance LuaData LuaAPI where
 
-    writeLua LuaAPI {aname, adesc, functions, constants} =
+    writeLua LuaAPI {aname, adesc, functions, apiconstants} =
         -- LuaAutoGenHeader 
-        writeLua LuaClassDefn{cname=aname, cdesc=adesc, methods=functions, fields=constants, parents=[],isGlobal=True}
+        writeLua LuaClassDefn{cname=aname, cdesc=adesc, constants=functions, fields=apiconstants, parents=[],isGlobal=True}
 
 
 
