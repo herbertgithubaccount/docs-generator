@@ -226,19 +226,25 @@ instance LuaExpr TypeDefn where
 
             tableParser = cbracketsParser' (Table <$> parser <*> (commaParser *> parser))
             multiTypesParser = surroundBySpaces . some $ optionalIgnore (parser :: Parser TypeDefn)  (surroundBySpaces (stringParser' "|"))
-            dictParser = cbracketsParser' (Dict <$> surroundBySpaces (some (parser <* commaParser)))
+            coreDictParser = cbracketsParser' (surroundBySpaces (many ((parser :: Parser VarDefn) <* commaParser)))
+            -- dictParser = cbracketsParser' (Dict <$> surroundBySpaces (some (parser <* commaParser)))
+            dictParser = Dict <$> coreDictParser
             classParser = do 
-                charParser' '{' <* spaceParser <* charParser' '{'
-                fields <- surroundBySpaces (many (parser <* commaParser)) 
-                charParser' '}'
+                -- charParser' '{' <* spaceParser <* charParser' '{'
+                -- fields <- surroundBySpaces (many (parser <* commaParser)) 
+                -- charParser' '}'
+
+                charParser' '{'
+                fields <- surroundBySpaces coreDictParser
                 -- charParser' '}' <* surroundBySpaces (charParser ',') <* charParser '{'
-                constants <- optional' (surroundBySpaces (charParser ',') *> charParser '{'
-                        *> surroundBySpaces (many (parser <* commaParser))
-                        <* charParser' '}'
-                    )
+                -- constants <- optional' (surroundBySpaces (charParser ',') *> charParser '{'
+                --         *> surroundBySpaces (many (parser <* commaParser))
+                --         <* charParser' '}'
+                --     )
+                constants <- optional' (charParser ',' *> surroundBySpaces coreDictParser)
                 -- constants <- surroundBySpaces (many (parser <* commaParser))
                 -- charParser' '}' <* spaceParser <* charParser' '}'
-                spaceParser <* charParser' '}'
+                charParser' '}'
                 return $ Class fields constants []
 
 

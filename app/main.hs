@@ -53,16 +53,16 @@ decodeHelper gens td = case td of
     --                      in
     --                         LuaData.Class (LuaClassDefn{cname="", cdesc="", fields=fields', constants=Parser.constants , parents=[], isGlobal=False})
     Parser.Class{Parser.parents, Parser.fields, Parser.constants} ->
-        LuaData.Class (LuaClassDefn{cname="", cdesc="",
+        LuaData.Class{cname="",
             LuaData.fields= liftA3 LuaData.LuaField LuaData.name LuaData.desc LuaData.vtype . decodeVarHelper gens <$> fields,
             LuaData.constants=decodeVarHelper gens <$> constants,
             LuaData.parents=parents <&> (\x -> case decodeHelper gens x of
-                LuaData.Class (clsdefn@LuaClassDefn{}) -> clsdefn
-                _ -> LuaClassDefn{}
+                cls@LuaData.Class{} -> cls
+                _ -> LuaData.Class{}
             ),
                 -- <$> parents, 
             isGlobal=False
-        })
+        }
 
 
 
@@ -73,11 +73,14 @@ decodeVar :: VarDefn -> LuaVar
 decodeVar = decodeVarHelper []
 
 decodeVarHelper :: [String] -> Parser.VarDefn -> LuaData.LuaVar
-decodeVarHelper gens VarDefn{vName, vType, vDesc}  = LuaData.LuaVar vName vDesc decodedType
+decodeVarHelper gens VarDefn{vName, vType, vDesc} = case decodedType of 
+    Just LuaData.Class{} -> LuaData.LuaClass vName vDesc decodedType
+    _ -> LuaData.LuaVar vName vDesc decodedType
     where
         decodedType = vType >>= Just . (\case{
-            LuaData.Class clsdefn@LuaClassDefn{} ->
-                LuaData.Class (LuaData.updateMethodSignatures clsdefn{cname=vName, cdesc = vDesc})
+            cls@LuaData.Class{} -> LuaData.updateMethodSignatures cls{cname=vName}
+                -- LuaData.LuaClass (LuaData.updateMethodSignatures clsdefn{cname=vName, cdesc = vDesc})
+                -- LuaData.LuaClass (LuaData.updateMethodSignatures cls{cname=vName, cdesc = vDesc})
             ;
             x -> x;
         }) . decodeHelper gens
