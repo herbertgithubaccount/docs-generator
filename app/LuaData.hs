@@ -5,9 +5,10 @@ module LuaData
 , LuaType(Generic, Custom, Function, Array, Table, Primitive, Dict, Multi, Class, pars, rets, keys, vals)
 , LuaVar(name, desc, vtype, LuaVar, LuaField, LuaFuncArg, LuaFuncRet)
 , LuaClassDefn(LuaClassDefn, cname, cdesc, methods, fields, parents, isGlobal)
+, updateMethodSignatures
 -- , FuncDef
 ) where
-import Data.List (intercalate)
+import Data.List (intercalate, partition)
 -- import Language.Haskell.TH.Ppr (ppr_typedef)
 import Control.Applicative (liftA3)
 -- import qualified Data.Set as Set
@@ -129,18 +130,19 @@ instance LuaData LuaVar where
             ++ concatMap writeLua rets' -- formatted return values
             ++ funcHeader ++ name var ++ "(" ++ intercalate ", " (map name pars) ++ ") end"
             where
-                funcHeader = if '.' `elem` name var then "function " else "local function "
+                funcHeader = (if '.' `elem` name var then "function " else "local function ")
                 -- paramsStr = if null tableParams then "" else concatMap ((++"\n\n") . writeLua) tableParams
                 convertToClass v = case vtype v of
-                        Just (Dict vals) -> v{vtype=Just (Class (LuaClassDefn{methods=[], parents=[], cdesc=desc v, isGlobal=False,
-                                cname=name var ++ "." ++ name v,
-                                fields=liftA3 LuaField name desc vtype <$> vals
-                            }))}
+                        -- Just (Class cls) -> v{vtype=Just (Class (LuaClassDefn{methods=[], parents=[], cdesc=desc v, isGlobal=False,
+                        --         cname=name var ++ "." ++ name v,
+                        --         fields=liftA3 LuaField name desc vtype <$> fields cls
+                        --     }))}
+                        Just (Class clsdefn) -> v{vtype= Just (Class clsdefn{cname=name var ++ "." ++ name v})}
                         _ -> v
                 pars' = convertToClass <$> pars
                 rets' = convertToClass <$> rets
-                writer x = case vtype x of
-                    Just (Class cls) -> writeLua cls ++ "\n"
+                writer v = case vtype v of
+                    Just (Class clsdefn) -> writeLua clsdefn ++ "\n"
                     _ -> ""
                 paramsStr = concatMap writer pars' ++ concatMap writer rets'
                     -- where
@@ -155,23 +157,6 @@ instance LuaData LuaVar where
         where
             descStr = if null (desc var) then "" else  "--[[ " ++ desc var ++ "]]\n"
 
-    -- writeLua (LuaVar dname ddesc (Just (Dict vars))) =
-    --     if null ddesc then "" else  "--[[ " ++ ddesc ++ "]]\n"
-    --     ++ "---@class " ++ dname ++ "\n"
-    --     ++ concatMap (writeLua . (\v -> LuaField (name v) (desc v) (vtype v))) vars
-    -- writeLua (LuaField )
-    -- writeLua (LuaVar fname desc (Just fn@(Function{pars, rets}))) =
-    --     if null desc then "" else  "--[[ " ++ desc ++ "]]\n"
-    --     ++ case getGenerics fn of
-    --         [] -> ""
-    --         generics -> "---@generic " ++ intercalate ", " (writeLua <$> generics) ++ "\n"
-    --     ++ concatMap writeLua pars -- formatted parameters
-    --     ++ concatMap writeLua rets -- formatted return values
-    --     ++ funcHeader ++ fname ++ "(" ++ intercalate ", " (map name pars) ++ ") end"
-    --     where
-    --         funcHeader = if '.' `elem` fname then "function " else "local function "
-
-    -- writeLua _ = ""
 
     writeLuaInline var@LuaFuncRet{} = vname ++ maybe "unknown" writeLuaInline (vtype var)
         where vname = if null (name var) then "" else name var ++ ": "
@@ -188,12 +173,32 @@ data LuaClassDefn = LuaClassDefn{
     methods:: [LuaVar],
     isGlobal:: Bool
 } deriving (Show, Eq, Ord)
+
+
+updateMethodSignatures :: LuaClassDefn -> LuaClassDefn
+updateMethodSignatures clsdefn@LuaClassDefn{cname=clsName, methods=clsMethods} =
+    clsdefn{methods=newMethods}
+    where
+        newMethods = foldr f [] clsMethods
+        f m = (updateMethod m:)
+        updateMethod m = case vtype m of
+            Just fn@LuaData.Function{pars=selfArg@LuaFuncArg{name="self", vtype=selfArgType}:otherPars} ->
+                case selfArgType of
+                    Nothing -> m{vtype=newFn}
+                    Just (Custom varName) -> if varName == clsName
+                                            then m{vtype=newFn}
+                                            else m
+                    _ -> m
+                    where newFn = Just fn{pars=selfArg{vtype=Just (LuaData.Class clsdefn)}:otherPars}
+            _ -> m
+
+
 instance LuaData LuaClassDefn where
     writeLuaInline = cname
     writeLua cls@LuaClassDefn{parents} =
         (if null (cdesc cls) then "" else  "--[[ " ++ cdesc cls ++ "]]\n")
         ++ "---@class " ++ cname cls ++ parentsList ++ "\n"
-        ++ concatMap writeLua (fields cls)
+        ++ concatMap writeLua fields'
         ++ if null methodStrs then "" else
             luaTblDefn
             ++ intercalate "\n\n" methodStrs
@@ -201,31 +206,20 @@ instance LuaData LuaClassDefn where
             luaTblDefn = (if isGlobal cls && '.' `elem` cname cls then "" else "local ") ++ cname cls ++ " = {}\n\n"
             parentsList = if null parents then "" else ": " ++ intercalate ", " (map cname parents)
             clsName = cname cls
-            methodStrs = methods cls <&> writeLua .
-                (\m -> case vtype m of 
-                    Just fn@Function{pars=selfArg@LuaFuncArg{name="self", vtype=selfArgType}:otherPars} -> 
-                        case selfArgType of
-                            Nothing -> m{vtype=newFn}
-                            Just (Custom varName) -> if varName == clsName 
-                                                    then m{vtype=newFn}
-                                                    else m
-                            _ -> m
-                            where newFn = Just fn{pars=selfArg{vtype=Just (Class cls)}:otherPars}
-                    _ -> m
-                ) . (\m -> m{name=clsName ++ "." ++ name m})
-                -- \case{
-                --     v1@(LuaVar{vtype=Just fn@Function{pars=selfArg@LuaFuncArg{name="self", vtype=selfArgType}:otherPars}}) ->
-                --         case selfArgType of
-                --             Nothing -> v1{vtype=Just fn{pars=selfArg{vtype=Just (Class cls)}:otherPars}}
-                --             Just (Custom varName) -> if varName == clsName 
-                --                                     then v1{vtype=Just fn{pars=selfArg{vtype=Just (Class cls)}:otherPars}}
-                --                                     else v1
-                --             _ -> v1
-                --             -- LuaVar{vtype=Just fn{pars=v1{vtype=}}}
-                --     ;
-                --     x -> x
-                -- }
-            --  . (\m -> m{name=clsName ++ "." ++ name m})
+            (specialFuncs, fields') = partition (\f -> case vtype f of
+                Nothing -> False
+                Just Function{pars, rets} -> any pr pars || any pr rets
+                    where
+                        pr :: LuaVar -> Bool
+                        pr v = case vtype v of
+                            Nothing -> False
+                            Just (Class _) -> True
+                            _ -> False
+                _ -> False
+                ) (fields cls)
+            specialFuncs' = liftA3 LuaVar name desc vtype <$> specialFuncs
+            methodStrs = (specialFuncs' ++ methods cls) <&> (\m -> writeLua m{name=clsName ++ "." ++ name m})
+            
 
     -- writeLuaInline (LuaVar name _ vtype) = case vtype of 
 

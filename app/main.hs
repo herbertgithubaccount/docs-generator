@@ -48,8 +48,10 @@ decodeHelper gens td = case td of
                                     Just LuaData.Function{pars} -> name (head pars) == "self"
                                     _ -> False
                              (methods, fields) = partition partitioner decodedVars
+                             fields' = liftA3 LuaData.LuaField LuaData.name LuaData.desc LuaData.vtype <$> fields
+                            --  fields' = fields
                          in
-                            LuaData.Class (LuaClassDefn{cname="", cdesc="", fields, methods, parents=[], isGlobal=False})
+                            LuaData.Class (LuaClassDefn{cname="", cdesc="", fields=fields', methods, parents=[], isGlobal=False})
 
 
 
@@ -63,7 +65,9 @@ decodeVarHelper :: [String] -> Parser.VarDefn -> LuaData.LuaVar
 decodeVarHelper gens VarDefn{vName, vType, vDesc}  = LuaData.LuaVar vName vDesc decodedType
     where
         decodedType = vType >>= Just . (\case{
-            LuaData.Class clsdefn@LuaClassDefn{} -> LuaData.Class clsdefn{cname=vName, cdesc = vDesc};
+            LuaData.Class clsdefn@LuaClassDefn{} -> 
+                LuaData.Class (LuaData.updateMethodSignatures clsdefn{cname=vName, cdesc = vDesc})
+            ;
             x -> x;
         }) . decodeHelper gens
             -- (Just (LuaData.Class clsdefn@LuaData.LuaClassDefn{})) -> Just (LuaData.Class clsdefn{
