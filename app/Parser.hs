@@ -5,7 +5,7 @@
 module Parser 
 ( Parser(runParser)
 , ParserResult
-, TypeDefn(Primitive, NonPrimitive, Function, Multi, Dict, Table, Array, generics, args, rets, keys, vals)
+, TypeDefn(Primitive, NonPrimitive, Function, Multi, Dict, Class, Table, Array, generics, args, rets, keys, vals)
 , LuaExpr(parser)
 , VarDefn(vName, vDesc, vType, VarDefn)
 , PrimitiveType(STRING, INT, NUM, BOOL, NIL)
@@ -49,14 +49,7 @@ instance Applicative Parser where
   -- pure function sends a string `str` to `Parser ( Right (a, str))`
   pure a = Parser (Right a, )
 
-  (<*>) :: Parser (a -> b) -> Parser a -> Parser b
-  (<*>) f p = f >>= (p <&>)
-
-  -- the following are equivalent:
---   (<*>) f p = f >>= (p <&>)
---   (<*>) f p = f >>= (\f' -> p >>= \a -> pure (f' a))
---   (<*>) = ap
---   (<*>) f p = do { f' <- f; p' <- p; return (f' p') }
+  (<*>) = ap
 
 instance MonadFail Parser where
     fail errMsg = Parser (Left errMsg, )
@@ -82,12 +75,11 @@ eatChar = eatCharFailMsg "Unexpected EOF"
 
 satisfy :: Show a => (a -> Bool) -> Parser a -> Parser a
 -- satisfy pred parser = do {a <- parser; guard (pred a); return a}
-satisfy pred parser =
-    parser >>= \a -> if pred a then pure a else fail (show a ++ " didnt satisfy a predicate")
+satisfy pr = (>>= \a -> if pr a then pure a else fail (show a ++ " didnt satisfy a predicate"))
 
 -- consumes a single character if `pred` succeeds, otherwise fails
 satisfyChar :: (Char -> Bool) -> Parser Char
-satisfyChar pred = satisfy pred eatChar
+satisfyChar pr = satisfy pr eatChar
 
 charParser :: Char -> Parser Char
 charParser charToMatch = satisfyChar (==charToMatch)
@@ -108,21 +100,6 @@ bracketsParser' :: Parser a -> Parser a
 bracketsParser' p = charParser' '[' *> p <* charParser' ']'
 cbracketsParser' :: Parser a -> Parser a
 cbracketsParser' p = charParser' '{' *> p <* charParser' '}'
-
--- TODO: make parser ignore repeated ']'
-
-
-
-
--- parseToString :: Show a => Parser a -> String -> String
--- parseToString p str = let (result, leftover) = runParser p str in
---     (case result of
---         Left err -> show "ERROR: " ++ err
---         Right res -> "SUCCESS: " ++ show res
---     ) ++ case leftover of
---         [] -> ""
---         _ -> ".\n\tunparsed: " ++ leftover
-
 
 
 varNameParser :: Parser String
@@ -156,18 +133,6 @@ commaParser = optional' $ surroundBySpaces (stringParser' ",")
 data VarDefn = VarDefn{vName:: String, vType:: Maybe TypeDefn, vDesc:: String} deriving (Show, Eq)
 
 
--- -- commentParser = tail <$> selector ' '
--- commentParser = tail <$> selector ' ' 
---     where
---         eater = eatCharFailMsg "Unterminated comment!"
---         selector :: Char -> Parser String
---         selector = \case{
---             ']' -> eater >>= \case{
---                 ']' -> pure "";
---                 ch -> (']':) . (ch:) <$> (eater >>= selector)
---             };
---             ch -> (ch:) <$> (eater >>= selector);
---         }
 commentParser :: Parser String
 commentParser = stringParser "[[" *> commentParserHelper
     where
@@ -177,30 +142,6 @@ commentParser = stringParser "[[" *> commentParserHelper
             (']':rest)     -> runParser ((']':) <$> commentParserHelper) rest;
             s              -> (Left "Unterminated comment!", s);
         };
-                                    --   f (']':']':rest) = (Right "", rest)
-                                    --   f (']':rest) = runParser ((']':) <$> commentParserHelper) rest
-                                    --   f s = (Left "Unterminated comment!", s)
-        -- bracketEater = Parser f where 
-        --                               f (']':']':rest) = (Right "", rest)
-        --                               f (']':rest) = runParser ((']':) <$> commentParserHelper) rest
-        --                               f s = (Left "Unterminated comment!", s)
-        --     where
-        --         f (']':']':rest) = (Right "", rest)
-        --         f (']':rest) = runParser ((']':) <$> commentParserHelper) rest
-        --         f s = (Left "Unterminated comment!", s)
-        -- bracketEater = Parser f
-        --     where
-        --         f (']':']':rest) = (Right "", rest)
-        --         f (']':rest) = runParser ((']':) <$> commentParserHelper) rest
-        --         f s = (Left "Unterminated comment!", s)
-
-            --     $ \case{
-            -- ']':rest -> case rest of {
-            --     [] -> (Left "Unterminated comment!", ""); -- there needs to be at least two characters
-            --     ']':rest' -> (Right "", rest');
-            --     _ -> runParser ((']':) <$> commentParserHelper) rest;
-            -- };
-            -- s -> (Left "did not find bracket!", s);
 
 
 
@@ -254,6 +195,7 @@ data TypeDefn = Primitive PrimitiveType
     | Array [TypeDefn]
     | Table {keys :: TypeDefn, vals :: TypeDefn}
     | Dict [VarDefn]
+    | Class [VarDefn]
     deriving (Show, Eq)
 
 instance LuaExpr TypeDefn where
@@ -265,6 +207,7 @@ instance LuaExpr TypeDefn where
          <|> Array <$> bracketsParser' multiTypesParser
          <|> tableParser
          <|> dictParser
+         <|> classParser
         where
             -- function parsing 
             functionParser = Function <$> genericsParser <*> argsParser <*> retsParser <*> defnsParser
@@ -278,11 +221,12 @@ instance LuaExpr TypeDefn where
                     -- requires naming return parameters
                     -- TODO: remove restriction on `retsParsers` that requires return parameters to be named
                     retsParser = surroundBySpaces (stringParser' "->") *> argsParser
-                    defnsParser = optional' $ surroundBySpaces (stringParser' "where") *> many parser
+                    defnsParser = optional' $ surroundBySpaces (stringParser' "where") *> parensParser' (surroundBySpaces (many (parser <* commaParser)))
 
             tableParser = cbracketsParser' (Table <$> parser <*> (commaParser *> parser))
             multiTypesParser = surroundBySpaces . some $ optionalIgnore (parser :: Parser TypeDefn)  (surroundBySpaces (stringParser' "|"))
             dictParser = cbracketsParser' (Dict <$> surroundBySpaces (some (parser <* commaParser)))
+            classParser = cbracketsParser' $ cbracketsParser' (Class <$> surroundBySpaces (some (parser <* commaParser)))
 
 
 -- main = do

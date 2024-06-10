@@ -1,10 +1,14 @@
-addItem: <K, V>(params, sorter: (a: K, b:V) -> res: bool) -> addedCount : num 
-    where
-        params: {
-            reference: (tes3reference | tes3mobileActor | string|K) [[who to give the item to]],
-            item: (tes3item|tes3leveledItem|string) [[The item to add. If a leveled item is passed, it will be resolved and added.]],
-            itemData: (tes3itemData|nil) [[The item data for the item.]],
-            soul: (tes3creature| tes3npc|nil) [[For creating filled soul gems.]],
-            count: num  [[Default: 1. The maximum number of items to add.]],
-            playSound: bool [[Default: true. If false, the up/down sound for the item won't be played. This only applies if reference is the player.]],
-        }
+tes3 : {{
+    addItem: <K, V>(params, sorter) -> addedCount : num 
+        where (
+            params: {{
+                reference: (tes3reference | tes3mobileActor | string|K) [[who to give the item to]],
+                item: (tes3item|tes3leveledItem|string) [[The item to add. If a leveled item is passed, it will be resolved and added.]],
+                itemData: (tes3itemData|nil) [[The item data for the item.]],
+                soul: (tes3creature| tes3npc|nil) [[For creating filled soul gems.]],
+                count: num  [[Default: 1. The maximum number of items to add.]],
+                playSound: bool [[Default: true. If false, the up/down sound for the item won't be played. This only applies if reference is the player.]],
+            }},
+            sorter: (a:K,b:V) -> result : bool
+        )
+}}

@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Main where
 -- import qualified Data.Maybe
 
@@ -8,7 +9,7 @@ import Control.Applicative (liftA3, (<|>))
 import System.IO (openFile)
 import GHC.IO.IOMode (IOMode(..))
 import GHC.IO.Handle (hGetContents)
-import Data.List (elemIndex)
+import Data.List (elemIndex, partition)
 import Data.Functor ((<&>))
 import qualified Data.Maybe as Maybe
 
@@ -25,66 +26,59 @@ decodeHelper gens td = case td of
                              then LuaData.Generic n
                              else LuaData.Custom n
     Parser.Array types -> LuaData.Array $ decodeHelper gens <$> types
-    Parser.Dict vars -> LuaData.Dict $ decodeVar gens <$> vars
+    Parser.Dict vars -> LuaData.Dict $ decodeVarHelper gens <$> vars
     Parser.Multi vars -> LuaData.Multi $ decodeHelper gens <$> vars
     Parser.Table keys vals -> LuaData.Table (decodeHelper gens keys) (decodeHelper gens vals)
     Parser.Function generics args rets defns ->
         LuaData.Function{
-            -- generics=LuaData.Generic <$> generics,
-            -- LuaData.pars=args <&> (liftA3 LuaData.LuaFuncArg Parser.vName getDesc (fmap decodeTypeDefn . getType)),
             LuaData.pars=args <&> decodeArgs LuaData.LuaFuncArg,
             LuaData.rets=rets <&> decodeArgs LuaData.LuaFuncRet
-            -- LuaData.rets=map (liftA3 LuaData.LuaFuncRet Parser.vName getDesc (fmap decodeTypeDefn . getType)) rets
         }
         where
-            -- decodeArgs cons arg = cons
-            --     (Parser.vName arg)
-            --     (getDesc arg)
-            --     (decodeHelper gens' <$> getType arg)
             decodeArgs cons = liftA3 cons Parser.vName getDesc (fmap (decodeHelper gens') . getType)
 
             gens' = generics ++ gens
             defnNames = vName <$> defns
-            -- getDesc par = if vDesc par /= "" then vDesc par else case elemIndex (vName par) defnNames of
-            --                 Just n -> vDesc (defns !! n)
-            --                 _ -> ""
             getDesc par = if vDesc par /= ""
                           then vDesc par
                           else Maybe.maybe "" (vDesc . (defns !!)) (elemIndex (vName par) defnNames)
             getType par = vType par <|> (elemIndex (vName par) defnNames >>= vType . (defns !!))
-            -- getType par = if Data.Maybe.isJust (vType par) then vType par else case elemIndex (vName par) defnNames of
-            --                 Just n -> vType (defns !! n)
-            --                 _ -> Nothing
+    Parser.Class vars -> let decodedVars = decodeVarHelper gens <$> vars
+                             partitioner v = case vtype v of
+                                    Just LuaData.Function{pars} -> name (head pars) == "self"
+                                    _ -> False
+                             (methods, fields) = partition partitioner decodedVars
+                         in
+                            LuaData.Class (LuaClassDefn{cname="", cdesc="", fields, methods, parents=[], isGlobal=False})
 
-                -- True -> if vDesc par == ""
-    where
-        decodeVar :: [String] -> Parser.VarDefn -> LuaData.LuaVar
-        decodeVar gens' (VarDefn x1 x2 x3) = LuaData.LuaVar x1 x3 (decodeHelper gens' <$> x2)
+
 
 decodeTypeDefn :: Parser.TypeDefn -> LuaData.LuaType
 decodeTypeDefn = decodeHelper []
--- decodeTypeDefn (NonPrimitive s) = LuaData.Custom s
 
--- decodeTypeDefn (Parser.Array types) = LuaData.Array (decodeTypeDefn <$> types)
--- decodeTypeDefn (Parser.Dict vars) = LuaData.Dict (map decodeVar vars)
--- decodeTypeDefn (Parser.Multi vars) = LuaData.Multi $ decodeTypeDefn <$> vars
--- decodeTypeDefn (Parser.Table keys vals) = LuaData.Table (decodeTypeDefn keys) (decodeTypeDefn vals)
--- decodeTypeDefn (Parser.Function generics args rets defns) =
---     LuaData.Function{
---         -- generics=LuaData.Generic <$> generics,
---         LuaData.pars=map (liftA3 LuaData.LuaFuncArg Parser.vName Parser.vDesc (fmap decodeTypeDefn . Parser.vType)) args,
---         LuaData.rets=map (liftA3 LuaData.LuaFuncRet Parser.vName Parser.vDesc (fmap decodeTypeDefn . Parser.vType)) rets
---     }
+decodeVar :: VarDefn -> LuaVar
+decodeVar = decodeVarHelper []
 
+decodeVarHelper :: [String] -> Parser.VarDefn -> LuaData.LuaVar
+decodeVarHelper gens VarDefn{vName, vType, vDesc}  = LuaData.LuaVar vName vDesc decodedType
+    where
+        decodedType = vType >>= Just . (\case{
+            LuaData.Class clsdefn@LuaClassDefn{} -> LuaData.Class clsdefn{cname=vName, cdesc = vDesc};
+            x -> x;
+        }) . decodeHelper gens
+            -- (Just (LuaData.Class clsdefn@LuaData.LuaClassDefn{})) -> Just (LuaData.Class clsdefn{
+            --     cname=vName, cdesc = vDesc
+            --     })
+            -- x -> x
+        -- decodedType = case decodeHelper gens <$> vType of
+        --     (Just (LuaData.Class clsdefn@LuaData.LuaClassDefn{})) -> Just (LuaData.Class clsdefn{
+        --         cname=vName, cdesc = vDesc
+        --         })
+        --     x -> x
+            -- LuaData.LuaVar varname vardesc (decodeHelper gens' <$> vartype)
 
-
-decodeVar :: Parser.VarDefn -> LuaData.LuaVar
-decodeVar (VarDefn x1 x2 x3) = LuaData.LuaVar x1 x3 (decodeTypeDefn <$> x2)
-
-
-
--- instance LuaData LuaType where
---     writeLua
+-- decodeVar :: Parser.VarDefn -> LuaData.LuaVar
+-- decodeVar (VarDefn x1 x2 x3) = LuaData.LuaVar x1 x3 (decodeTypeDefn <$> x2)
 
 main :: IO ()
 main = do
@@ -102,48 +96,3 @@ main = do
             (Left err, rest) -> "ERROR: " ++ err ++ "\n\tunparsed: " ++ rest
 
     putStrLn str
-
-
--- main = do {
---     let
---         param1 = FuncParameter "a" (Just "help me") [pSTRING, pINT]
---         param2 = FuncParameter "b" (Just "broccoli") [pNUM, pBOOL]
---         ret1 = FuncParameter "a" (Just "help me") [pSTRING, pINT]
---         ret2 = FuncParameter "b" (Just "broccoli") [pNUM, pBOOL]
---         f1 = LuaFunction [param1, param2] [ret1, ret2]
---         insertdef = FuncDef "insert" (Just "desc") (LuaFunction [param1, param2] [ret1, ret2])
---         cls1 = LuaClass {cname="Test_Class", cdesc=Just "Test Class Description", parents=[],
---             fields=[
---                 FuncParameter "a" (Just "help me") [pSTRING, pINT],
---                 FuncParameter  "b" (Just "broccoli") [pNUM, pBOOL]
---             ],
---             methods=[
---                 FuncDef "method_1" (Just "desc 1") (LuaFunction
---                     [param1, param2, FuncParameter "param3" (Just "Paramter 3 description") [Generic "K", Custom "Lua.mcm.DecimalSlider"]]
---                     [ret1, ret2])
---             ]
---         }
---         tableapi = LuaAPI {aname="table", adesc=Just "Extends LUA table Api",
---             constants=[
---                 FuncParameter "size" (Just "size of table") [pINT],
---                 FuncParameter "name" (Just "name") [pSTRING]
---                 ],
---             functions=[
---                 insertdef
---                 ]
---         }
---     in
---         do
---             putStrLn $ writeLua param1;
---             -- putStrLn $ name param2;
---             -- putStrLn $ name f1;
---             putStrLn $ writeLua f1;
---             putStrLn $ writeLua insertdef;
---             putStrLn $ writeLua cls1;
---             putStrLn $ writeLua tableapi
---             -- putStrLn $ writeLua f1;
--- }
-
-
-
-
